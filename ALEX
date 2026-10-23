@@ -1,0 +1,393 @@
+-- Dan FFA Script | Luau | Roblox Executor (dff)
+-- Devs: diorovve & sobhanlover
+-- Features: AutoKill, ESP, Lock-on, Fast Reload, Fly, Panic Stop
+-- Perf: no frame-loop spam, throttled cycles, no double-start
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local Config = {
+    AutoKill = false,
+    ESP = false,
+    LockedPlayer = nil,
+    FastReload = false,
+    Fly = false,
+    FlySpeed = 120,
+    AutoKillRange = 50,
+    ESPColor = Color3.fromRGB(255, 0, 0),
+}
+
+-- Cycle guards: prevent double-start on rapid toggle
+local Running = {
+    AutoKill = false,
+    FastReload = false,
+}
+
+-- ============ PANIC ============
+local function PanicStop()
+    Config.AutoKill = false
+    Config.ESP = false
+    Config.FastReload = false
+    Config.Fly = false
+    Config.LockedPlayer = nil
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Character then
+            local hl = p.Character:FindFirstChild("ShivESP")
+            if hl then hl:Destroy() end
+        end
+    end
+
+    local char = LocalPlayer.Character
+    if char then
+        local hrp = char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            for _, v in ipairs(hrp:GetChildren()) do
+                if v:IsA("BodyVelocity") or v:IsA("BodyGyro") then v:Destroy() end
+            end
+        end
+    end
+
+    if _G.ShivRefreshUI then _G.ShivRefreshUI() end
+end
+
+-- ============ GUI ============
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "DanFFA_Menu"
+ScreenGui.ResetOnSpawn = false
+ScreenGui.Parent = game:GetService("CoreGui")
+
+local MainFrame = Instance.new("Frame")
+MainFrame.Size = UDim2.new(0, 280, 0, 470)
+MainFrame.Position = UDim2.new(0, 20, 0, 20)
+MainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 25)
+MainFrame.BorderSizePixel = 0
+MainFrame.Active = true
+MainFrame.Draggable = true
+MainFrame.Parent = ScreenGui
+
+local UICorner = Instance.new("UICorner")
+UICorner.CornerRadius = UDim.new(0, 8)
+UICorner.Parent = MainFrame
+
+local Title = Instance.new("TextLabel")
+Title.Size = UDim2.new(1, 0, 0, 35)
+Title.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
+Title.Text = "  Dan FFA | by diorovve & sobhanlover"
+Title.TextColor3 = Color3.fromRGB(200, 200, 255)
+Title.TextXAlignment = Enum.TextXAlignment.Left
+Title.Font = Enum.Font.GothamBold
+Title.TextSize = 12
+Title.Parent = MainFrame
+local TitleCorner = Instance.new("UICorner")
+TitleCorner.CornerRadius = UDim.new(0, 8)
+TitleCorner.Parent = Title
+
+local PanicBtn = Instance.new("TextButton")
+PanicBtn.Size = UDim2.new(1, -20, 0, 32)
+PanicBtn.Position = UDim2.new(0, 10, 1, -45)
+PanicBtn.BackgroundColor3 = Color3.fromRGB(120, 20, 20)
+PanicBtn.Text = "PANIC STOP (everything off)"
+PanicBtn.TextColor3 = Color3.fromRGB(255, 220, 220)
+PanicBtn.Font = Enum.Font.GothamBold
+PanicBtn.TextSize = 12
+PanicBtn.Parent = MainFrame
+local PanicCorner = Instance.new("UICorner")
+PanicCorner.CornerRadius = UDim.new(0, 6)
+PanicCorner.Parent = PanicBtn
+PanicBtn.MouseButton1Click:Connect(PanicStop)
+
+local TabFrame = Instance.new("Frame")
+TabFrame.Size = UDim2.new(1, -20, 0, 30)
+TabFrame.Position = UDim2.new(0, 10, 0, 45)
+TabFrame.BackgroundTransparency = 1
+TabFrame.Parent = MainFrame
+
+local Tabs = {}
+local TabNames = {"Main", "Players", "Fly"}
+for i, name in ipairs(TabNames) do
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1/3, -4, 1, 0)
+    btn.Position = UDim2.new((i-1)/3, 2, 0, 0)
+    btn.BackgroundColor3 = (name == "Main") and Color3.fromRGB(50, 50, 70) or Color3.fromRGB(35, 35, 45)
+    btn.Text = name
+    btn.TextColor3 = Color3.fromRGB(200, 200, 220)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 12
+    btn.Parent = TabFrame
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+    Tabs[name] = btn
+end
+[23.10.2026 18:08] Алекс я курю каждый день все мои мысли о 💀💀💀💀: local ContentFrame = Instance.new("Frame")
+ContentFrame.Size = UDim2.new(1, -20, 1, -135)
+ContentFrame.Position = UDim2.new(0, 10, 0, 85)
+ContentFrame.BackgroundTransparency = 1
+ContentFrame.Parent = MainFrame
+
+local ToggleRegistry = {}
+local function CreateToggle(parent, text, key, callback)
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 32)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+    btn.Text = text .. ": OFF"
+    btn.TextColor3 = Color3.fromRGB(180, 180, 200)
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 12
+    btn.Parent = parent
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 6)
+    corner.Parent = btn
+    local entry = { button = btn, label = text, key = key }
+    table.insert(ToggleRegistry, entry)
+    btn.MouseButton1Click:Connect(function()
+        Config[key] = not Config[key]
+        btn.Text = text .. ": " .. (Config[key] and "ON" or "OFF")
+        btn.BackgroundColor3 = Config[key] and Color3.fromRGB(40, 70, 50) or Color3.fromRGB(35, 35, 45)
+        if callback then callback(Config[key]) end
+    end)
+    return btn
+end
+
+_G.ShivRefreshUI = function()
+    for _, e in ipairs(ToggleRegistry) do
+        if e.key then
+            e.button.Text = e.label .. ": " .. (Config[e.key] and "ON" or "OFF")
+            e.button.BackgroundColor3 = Config[e.key] and Color3.fromRGB(40, 70, 50) or Color3.fromRGB(35, 35, 45)
+        end
+    end
+    if _G.ShivRefreshPlayers then _G.ShivRefreshPlayers() end
+end
+
+-- ============ AUTO KILL (throttled, nearest-only) ============
+local AutoKillContent = Instance.new("Frame")
+AutoKillContent.Size = UDim2.new(1, 0, 1, 0)
+AutoKillContent.BackgroundTransparency = 1
+AutoKillContent.Visible = true
+AutoKillContent.Parent = ContentFrame
+
+CreateToggle(AutoKillContent, "Auto Kill", "AutoKill", function(state)
+    if state and not Running.AutoKill then
+        Running.AutoKill = true
+        task.spawn(function()
+            while Config.AutoKill do
+                task.wait(0.08)
+                local char = LocalPlayer.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if not hrp then continue end
+
+                -- find nearest valid target in range
+                local nearest, nearestDist = nil, Config.AutoKillRange
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p == LocalPlayer then continue end
+                    local c = p.Character
+                    if not c then continue end
+                    local hum = c:FindFirstChildOfClass("Humanoid")
+                    if not hum or hum.Health <= 0 then continue end
+                    local tHrp = c:FindFirstChild("HumanoidRootPart")
+                    if not tHrp then continue end
+                    local d = (tHrp.Position - hrp.Position).Magnitude
+                    if d < nearestDist then nearest, nearestDist = tHrp, d end
+                end
+
+                if nearest then
+                    firetouchinterest(hrp, nearest, 0)
+                    task.wait(0.03)
+                    firetouchinterest(hrp, nearest, 1)
+                    task.wait(0.05)
+                end
+            end
+            Running.AutoKill = false
+        end)
+    end
+end).Position = UDim2.new(0, 0, 0, 0)
+
+CreateToggle(AutoKillContent, "ESP Highlight", "ESP", function(state)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local hl = p.Character:FindFirstChild("ShivESP")
+            if state and not hl then
+                local h = Instance.new("Highlight")
+                h.Name = "ShivESP"
+                h.FillColor = Config.ESPColor
+                h.FillTransparency = 0.5
+                h.OutlineColor = Color3.fromRGB(255, 255, 255)
+                h.Parent = p.Character
+            elseif not state and hl then
+                hl:Destroy()
+            end
+        end
+    end
+end).Position = UDim2.new(0, 0, 0, 40)
+[23.10.2026 18:08] Алекс я курю каждый день все мои мысли о 💀💀💀💀: CreateToggle(AutoKillContent, "Fast Reload", "FastReload", function(state)
+    if state and not Running.FastReload then
+        Running.FastReload = true
+        task.spawn(function()
+            while Config.FastReload do
+                task.wait(0.3)
+                local char = LocalPlayer.Character
+                if char and char:FindFirstChildOfClass("Tool") then
+                    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.R, false, game)
+                    task.wait(0.03)
+                    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.R, false, game)
+                end
+            end
+            Running.FastReload = false
+        end)
+    end
+end).Position = UDim2.new(0, 0, 0, 80)
+
+-- ============ PLAYERS ============
+local PlayersContent = Instance.new("Frame")
+PlayersContent.Size = UDim2.new(1, 0, 1, 0)
+PlayersContent.BackgroundTransparency = 1
+PlayersContent.Visible = false
+PlayersContent.Parent = ContentFrame
+
+local PlayerList = Instance.new("ScrollingFrame")
+PlayerList.Size = UDim2.new(1, 0, 1, 0)
+PlayerList.BackgroundTransparency = 1
+PlayerList.ScrollBarThickness = 4
+PlayerList.CanvasSize = UDim2.new(0, 0, 0, 0)
+PlayerList.Parent = PlayersContent
+
+local function RefreshPlayerList()
+    local existing = {}
+    for _, child in ipairs(PlayerList:GetChildren()) do
+        if child:IsA("TextButton") then existing[child.Name] = child end
+    end
+    local y = 0
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then
+            local key = "P_" .. p.UserId
+            local btn = existing[key]
+            if not btn then
+                btn = Instance.new("TextButton")
+                btn.Name = key
+                btn.Size = UDim2.new(1, -10, 0, 30)
+                btn.Font = Enum.Font.Gotham
+                btn.TextSize = 11
+                btn.Parent = PlayerList
+                local corner = Instance.new("UICorner")
+                corner.CornerRadius = UDim.new(0, 4)
+                corner.Parent = btn
+                btn.MouseButton1Click:Connect(function()
+                    if Config.LockedPlayer == p then
+                        Config.LockedPlayer = nil
+                    else
+                        Config.LockedPlayer = p
+                    end
+                    RefreshPlayerList()
+                end)
+            end
+            btn.Position = UDim2.new(0, 5, 0, y)
+            btn.Text = p.DisplayName .. " (@" .. p.Name .. ")"
+            btn.BackgroundColor3 = (Config.LockedPlayer == p) and Color3.fromRGB(80, 40, 40) or Color3.fromRGB(35, 35, 45)
+            btn.TextColor3 = Color3.fromRGB(200, 200, 220)
+            existing[key] = nil
+            y = y + 34
+        end
+    end
+    -- clean stale
+    for _, btn in pairs(existing) do btn:Destroy() end
+    PlayerList.CanvasSize = UDim2.new(0, 0, 0, y)
+end
+_G.ShivRefreshPlayers = RefreshPlayerList
+RefreshPlayerList()
+Players.PlayerAdded:Connect(function() task.wait(0.3) RefreshPlayerList() end)
+Players.PlayerRemoving:Connect(function(p)
+    if Config.LockedPlayer == p then Config.LockedPlayer = nil end
+    task.wait(0.3)
+    RefreshPlayerList()
+end)
+
+-- ============ FLY ============
+local FlyContent = Instance.new("Frame")
+FlyContent.Size = UDim2.new(1, 0, 1, 0)
+FlyContent.BackgroundTransparency = 1
+FlyContent.Visible = false
+FlyContent.Parent = ContentFrame
+[23.10.2026 18:08] Алекс я курю каждый день все мои мысли о 💀💀💀💀: CreateToggle(FlyContent, "Fly (Space/Ctrl)", "Fly", function(state)
+    local char = LocalPlayer.Character
+    if not char then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if state then
+        local bodyGyro = Instance.new("BodyGyro")
+        bodyGyro.P = 9e4
+        bodyGyro.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+        bodyGyro.CFrame = hrp.CFrame
+        bodyGyro.Parent = hrp
+        local bodyVel = Instance.new("BodyVelocity")
+        bodyVel.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+        bodyVel.Velocity = Vector3.new(0, 0, 0)
+        bodyVel.Parent = hrp
+        local flyConn = RunService.Heartbeat:Connect(function()
+            if not Config.Fly or not hrp.Parent then
+                flyConn:Disconnect()
+                bodyGyro:Destroy()
+                bodyVel:Destroy()
+                return
+            end
+            bodyGyro.CFrame = Camera.CFrame
+            local move = Vector3.new(0, 0, 0)
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + Camera.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - Camera.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - Camera.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + Camera.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move = move - Vector3.new(0, 1, 0) end
+            bodyVel.Velocity = move * Config.FlySpeed
+        end)
+    end
+end).Position = UDim2.new(0, 0, 0, 0)
+
+-- ============ TABS ============
+for name, btn in pairs(Tabs) do
+    btn.MouseButton1Click:Connect(function()
+        for n, b in pairs(Tabs) do
+            b.BackgroundColor3 = (n == name) and Color3.fromRGB(50, 50, 70) or Color3.fromRGB(35, 35, 45)
+        end
+        AutoKillContent.Visible = (name == "Main")
+        PlayersContent.Visible = (name == "Players")
+        FlyContent.Visible = (name == "Fly")
+    end)
+end
+
+-- ============ LOCK-ON ============
+RunService.RenderStepped:Connect(function()
+    if Config.LockedPlayer and Config.LockedPlayer.Character then
+        local tHead = Config.LockedPlayer.Character:FindFirstChild("Head")
+        if tHead then
+            Camera.CFrame = CFrame.new(Camera.CFrame.Position, tHead.Position)
+        end
+    end
+end)
+
+-- ============ PANIC KEY ============
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        PanicStop()
+    end
+end)
+
+-- ============ ESP ON RESPAWN ============
+Players.PlayerAdded:Connect(function(p)
+    p.CharacterAdded:Connect(function(char)
+        task.wait(1)
+        if Config.ESP then
+            local h = Instance.new("Highlight")
+            h.Name = "ShivESP"
+            h.FillColor = Config.ESPColor
+            h.FillTransparency = 0.5
+            h.OutlineColor = Color3.fromRGB(255, 255, 255)
+            h.Parent = char
+        end
+    end)
+end)
